@@ -1,27 +1,76 @@
 use std::sync::Arc;
-use vulkano::device::physical::PhysicalDevice;
+use vulkano::device::physical::{PhysicalDevice, PhysicalDeviceType};
 use vulkano::device::{
     Device, DeviceCreateInfo, DeviceExtensions, Queue, QueueCreateInfo, QueueFlags,
 };
 use vulkano::instance::{Instance, InstanceCreateInfo};
+use vulkano::swapchain::Surface;
 use vulkano::VulkanLibrary;
+use vulkano_win::VkSurfaceBuild;
+use winit::dpi::PhysicalSize;
+use winit::event_loop::EventLoop;
+use winit::window::{Window, WindowBuilder};
 
 pub fn construct_gpu() -> (
     Arc<VulkanLibrary>,
     Arc<PhysicalDevice>,
-	u32,
+    u32,
     Arc<Instance>,
     Arc<Device>,
     impl ExactSizeIterator + Iterator<Item = Arc<Queue>>,
+    Arc<Window>,
+    Arc<Surface>,
+	EventLoop<()>,
+	PhysicalSize<u32>,
 ) {
     let library = VulkanLibrary::new().expect("no local Vulkan library/DLL");
-    let instance = Instance::new(library.clone(), InstanceCreateInfo::default())
-        .expect("failed to create instance");
-    let physical_device = instance
+    let required_extensions = vulkano_win::required_extensions(&library);
+    let instance = Instance::new(
+        library.clone(),
+        InstanceCreateInfo {
+            enabled_extensions: required_extensions,
+            ..Default::default()
+        },
+    )
+    .expect("failed to make instance");
+    let device_extensions = DeviceExtensions {
+        khr_swapchain: true,
+        ..DeviceExtensions::empty()
+    };
+    let event_loop = EventLoop::new();
+
+    let surface = WindowBuilder::new()
+        .build_vk_surface(&event_loop, instance.clone())
+        .unwrap();
+
+    let window = surface
+        .object()
+        .unwrap()
+        .clone()
+        .downcast::<Window>()
+        .unwrap();
+    let (physical_device, queue_family_index) = instance
         .enumerate_physical_devices()
-        .expect("could not enumerate devices")
-        .next()
-        .expect("no devices available");
+        .expect("failed to get devices")
+        .filter(|p| p.supported_extensions().contains(&device_extensions))
+        .filter_map(|p| {
+            p.queue_family_properties()
+                .iter()
+                .enumerate()
+                .position(|(i, q)| {
+                    q.queue_flags.contains(QueueFlags::GRAPHICS)
+                        && p.surface_support(i as u32, &surface).unwrap_or(false)
+                })
+                .map(|q| (p, q as u32))
+        })
+        .min_by_key(|(p, _)| match p.properties().device_type {
+            PhysicalDeviceType::DiscreteGpu => 0,
+            PhysicalDeviceType::IntegratedGpu => 1,
+            PhysicalDeviceType::VirtualGpu => 2,
+            PhysicalDeviceType::Cpu => 3,
+            _ => 4,
+        })
+        .expect("no device available");
     let name = &physical_device.properties().device_name;
     println!("{name:?}");
     for family in physical_device.queue_family_properties() {
@@ -52,6 +101,7 @@ pub fn construct_gpu() -> (
             }],
             enabled_extensions: DeviceExtensions {
                 khr_storage_buffer_storage_class: true,
+                khr_swapchain: true,
                 ..DeviceExtensions::empty()
             },
             ..Default::default()
@@ -59,7 +109,6 @@ pub fn construct_gpu() -> (
     )
     .expect("failed to create device");
     println!("Device acquired");
-
     (
         library,
         physical_device,
@@ -67,5 +116,9 @@ pub fn construct_gpu() -> (
         instance,
         result.0,
         result.1,
+        window.clone(),
+        surface,
+        event_loop,
+		window.inner_size(),
     )
 }

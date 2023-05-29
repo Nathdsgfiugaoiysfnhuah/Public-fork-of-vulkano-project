@@ -2,6 +2,7 @@ use crate::sync::future::FenceSignalFuture;
 use crate::sync::future::NowFuture;
 use std::sync::Arc;
 use vulkano::buffer::Subbuffer;
+use vulkano::command_buffer::PrimaryAutoCommandBuffer;
 use vulkano::command_buffer::allocator::{
     StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo,
 };
@@ -14,13 +15,26 @@ use vulkano::pipeline::{ComputePipeline, Pipeline, PipelineBindPoint};
 use vulkano::shader::ShaderModule;
 use vulkano::sync::{self, GpuFuture};
 
-pub fn deploy<T>(
-    shader: Arc<ShaderModule>,
+pub fn deploy(
     device: Arc<Device>,
     queue: Arc<Queue>,
+    command: Arc<PrimaryAutoCommandBuffer>,
+) -> FenceSignalFuture<CommandBufferExecFuture<NowFuture>> {
+
+    sync::now(device)
+        .then_execute(queue, command)
+        .unwrap()
+        .then_signal_fence_and_flush()
+        .unwrap()
+}
+
+pub fn get_deploy_command<T>(
+    shader: &Arc<ShaderModule>,
+    device: &Arc<Device>,
+    queue: &Arc<Queue>,
     buffer: &Subbuffer<[T]>,
     work_group_counts: [u32; 3],
-) -> FenceSignalFuture<CommandBufferExecFuture<NowFuture>> {
+) -> vulkano::command_buffer::PrimaryAutoCommandBuffer {
     let compute_pipeline = ComputePipeline::new(
         device.clone(),
         shader.entry_point("main").unwrap(),
@@ -54,7 +68,7 @@ pub fn deploy<T>(
     let mut command_buffer_builder = AutoCommandBufferBuilder::primary(
         &command_buffer_allocator,
         queue.queue_family_index(),
-        CommandBufferUsage::OneTimeSubmit,
+        CommandBufferUsage::MultipleSubmit,
     )
     .unwrap();
 
@@ -69,11 +83,5 @@ pub fn deploy<T>(
         .dispatch(work_group_counts)
         .unwrap();
 
-    let command_buffer = command_buffer_builder.build().unwrap();
-
-    sync::now(device)
-        .then_execute(queue, command_buffer)
-        .unwrap()
-        .then_signal_fence_and_flush()
-        .unwrap()
+    command_buffer_builder.build().unwrap()
 }
